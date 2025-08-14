@@ -1,10 +1,76 @@
 document.getElementById("summarize").addEventListener("click", () => {
-    const result = document.getElementById('result')
-    result.textContent = "Extracting text..."
+    const resultDiv = document.getElementById('result')
+    const summaryType = document.getElementById("summary-type").value
 
-    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-        chrome.tabs.sendMessage(tab.id, { type: "GET_ARTICLE_TEXT" }, ({ text }) => {
-            result.textContent = text ? text.slice(0, 300) + "..." : "No article text found."
+    resultDiv.innerHTML = '<div class="loader"> </div>'
+
+    // get gemini api key
+    // get contents from content.js
+    // send contents to gemini 
+
+    chrome.storage.sync.get(['geminiApiKey'], ({ geminiApiKey }) => {
+        if (!geminiApiKey) {
+            resultDiv.textContent = "No API key set. Click the gear icon to add one."
+            return;
+        }
+        chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+            chrome.tabs.sendMessage(tab.id, { type: "GET_ARTICLE_TEXT" }, async ({ text }) => {
+                if (!text) {
+                    resultDiv.textContent = "Couldn't extract any text from this page ..."
+                    return
+                }
+                try {
+                    const summary = await getGeminiSummary(text, summaryType, geminiApiKey)
+                    resultDiv.textContent = summary
+
+                } catch (error) {
+                    resultDiv.textContent = "Gemini error: " + error.message
+                }
+            })
         })
     })
 })
+
+async function getGeminiSummary(rawText, type, apiKey) {
+    const max = 20000
+    const text = rawText.length > max ? rawText.slice(0, max) + '...' : rawText
+
+    const promptMap = {
+        brief: `Summarize in 2-3 sentences: \n\n ${text}`,
+        bullets: `Summarize in 5-7 bullet points (start each line with "- ): \n\n ${text}`,
+        detailed: `Give a detailed summary: \n\n ${text}`,
+    }
+    const prompt = promptMap[type] || promptMap.brief
+    try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    // contents: { text: prompt },
+                    contents: [
+                        {
+                            parts: [{ text: prompt }]
+                        }
+                    ],
+                    generationConfig: { temperature: 0.2 },
+                }),
+            })
+
+        // console.log(res.json())
+
+        if (!res.ok) {
+            const errorData = await res.json();
+            throw new Error(errorData.error?.message || "Request failed")
+        }
+        const data = res.json()
+        return (
+            data?.candidates?.[0]?.content?.parts?.[0]?.text || "No summary available"
+        )
+    }
+    catch (error) {
+        console.log("Error calling gemini API: ", error)
+        throw new Error("Failed to generate summary. Please try again later.")
+    }
+
+}
